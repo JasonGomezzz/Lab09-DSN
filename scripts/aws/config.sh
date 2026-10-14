@@ -6,9 +6,10 @@
 
 AWS_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLICIES_DIR="$AWS_SCRIPTS_DIR/policies"
+REPO_DIR="$(cd "$AWS_SCRIPTS_DIR/../.." && pwd)"
 
 # Solo estas variables se leen desde .env (no se evalúa código ni se aceptan credenciales).
-_VARS_ENV=" BUCKET AWS_REGION ADMIN_PROFILE APP_PROFILE IAM_USER IAM_POLICY_NAME REPLICA_BUCKET REPLICA_REGION CORS_ORIGINS REPLICATION_ROLE EVIDENCIAS_DIR FOTOS_DIR DEMO_KEY "
+_VARS_ENV=" BUCKET AWS_REGION ADMIN_PROFILE APP_PROFILE IAM_USER IAM_POLICY_NAME REPLICA_BUCKET REPLICA_REGION CORS_ORIGINS REPLICATION_ROLE EVIDENCIAS_DIR FOTOS_DIR DEMO_KEY IAM_TAGS_POLICY_NAME LAMBDA_NAME LAMBDA_ROLE LAMBDA_RUNTIME LAMBDA_MEMORY LAMBDA_TIMEOUT THUMB_WIDTH LAMBDA_SRC_DIR "
 
 _cargar_env() {
   local archivo="$1" linea clave valor
@@ -47,7 +48,18 @@ _cargar_env "$AWS_SCRIPTS_DIR/.env"
 : "${CORS_ORIGINS:=http://localhost:3000,http://localhost:8080}"
 : "${EVIDENCIAS_DIR:=$HOME/Downloads/Lab09-DSN-evidencias}"
 
+: "${IAM_TAGS_POLICY_NAME:=app-imagenes-s3-tags}"
+: "${LAMBDA_NAME:=miniaturas-lab09}"
+: "${LAMBDA_ROLE:=lambda-miniaturas-lab09}"
+: "${LAMBDA_RUNTIME:=nodejs22.x}"
+: "${LAMBDA_MEMORY:=512}"
+: "${LAMBDA_TIMEOUT:=30}"
+: "${THUMB_WIDTH:=300}"
+: "${LAMBDA_SRC_DIR:=$REPO_DIR/lambda/miniaturas}"
+
 REPLICATION_POLICY_NAME="${REPLICATION_ROLE}-permisos"
+LAMBDA_POLICY_NAME="${LAMBDA_ROLE}-s3"
+LAMBDA_BASIC_POLICY_ARN="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 
 # CORS_ORIGINS acepta un arreglo JSON o una lista separada por comas/espacios.
 _cors_a_json() {
@@ -202,6 +214,16 @@ requerir_python() {
   command -v python3 >/dev/null 2>&1 || fail "Se necesita python3 para este paso."
 }
 
+# Con --dry-run solo avisa: el comando no se ejecuta.
+requerir_comando() { # $1 comando, $2 para qué se usa
+  command -v "$1" >/dev/null 2>&1 && return 0
+  if es_dry_run; then
+    aviso "$1 no está instalado (hace falta para $2; en --dry-run solo se simula)."
+    return 0
+  fi
+  fail "Se necesita $1 para $2."
+}
+
 # Verifica aws y, solo fuera de --dry-run, la identidad con ADMIN_PROFILE.
 requerir_aws() {
   local salida version
@@ -268,6 +290,8 @@ render_plantilla() {
     -e "s|__REPLICA_BUCKET__|$(_escapar_sed "$REPLICA_BUCKET")|g" \
     -e "s|__ACCOUNT_ID__|$(_escapar_sed "$ACCOUNT_ID")|g" \
     -e "s|__REPLICATION_ROLE__|$(_escapar_sed "$REPLICATION_ROLE")|g" \
+    -e "s|__LAMBDA_NAME__|$(_escapar_sed "$LAMBDA_NAME")|g" \
+    -e "s|__AWS_REGION__|$(_escapar_sed "$AWS_REGION")|g" \
     -e "s|__CORS_ORIGINS__|$(_escapar_sed "$CORS_ORIGINS_JSON")|g" \
     "$archivo")"
   if printf '%s' "$salida" | grep -Eq '__[A-Z_]+__'; then
