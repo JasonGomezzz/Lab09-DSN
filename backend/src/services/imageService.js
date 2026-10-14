@@ -5,6 +5,7 @@ const {
   HeadObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
+  GetObjectTaggingCommand,
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const {
@@ -12,6 +13,8 @@ const {
   validateUploadRequest,
   sanitizeFilename,
   assertValidKey,
+  validateTags,
+  tagsToHeader,
   detectImageType,
 } = require('../utils/validators');
 
@@ -20,10 +23,12 @@ const {
  * poder probarla sin credenciales ni red.
  */
 function createImageService({ s3, config }) {
-  const { bucket, prefix } = config;
+  const { bucket, prefix, thumbPrefix } = config;
 
   async function createUploadUrl(body) {
     const { filename, contentType, sizeBytes } = validateUploadRequest(body, config);
+    const tags = validateTags(body.tags, config.tagKeys);
+    const tagging = tagsToHeader(tags);
 
     const safeName = sanitizeFilename(filename, contentType, config.mimeToExt);
     const key = `${prefix}${Date.now()}-${crypto.randomBytes(6).toString('hex')}-${safeName}`;
@@ -31,12 +36,14 @@ function createImageService({ s3, config }) {
     // ContentLength y Content-Type quedan firmados: S3 rechaza el PUT si el
     // cuerpo no pesa lo declarado o si cambia el tipo. El cifrado SSE-S3 también
     // se firma, por lo que el cliente debe reenviar los encabezados devueltos.
+    // Las etiquetas viajan firmadas en la propia URL (parámetro x-amz-tagging).
     const command = new PutObjectCommand({
       Bucket: bucket,
       Key: key,
       ContentType: contentType,
       ContentLength: sizeBytes,
       ServerSideEncryption: 'AES256',
+      ...(tagging && { Tagging: tagging }),
     });
 
     const uploadUrl = await getSignedUrl(s3, command, {
@@ -48,6 +55,7 @@ function createImageService({ s3, config }) {
       uploadUrl,
       key,
       expiresIn: config.uploadUrlExpires,
+      tags,
       headers: {
         'Content-Type': contentType,
         'x-amz-server-side-encryption': 'AES256',
@@ -55,32 +63,61 @@ function createImageService({ s3, config }) {
     };
   }
 
-  async function listImages() {
+  async function listAll(listPrefix) {
     const objects = [];
     let ContinuationToken;
 
     do {
       const page = await s3.send(
-        new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken }),
+        new ListObjectsV2Command({ Bucket: bucket, Prefix: listPrefix, ContinuationToken }),
       );
       objects.push(...(page.Contents || []));
       ContinuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
     } while (ContinuationToken);
 
-    const images = objects.filter((obj) => obj.Key !== prefix && obj.Size > 0);
+    return objects.filter((obj) => obj.Key !== listPrefix && obj.Size > 0);
+  }
+
+  // Sin permiso s3:GetObjectTagging (política base del enunciado) la galería
+  // sigue funcionando, solo que sin etiquetas.
+  async function readTags(key) {
+    try {
+      const res = await s3.send(new GetObjectTaggingCommand({ Bucket: bucket, Key: key }));
+      return Object.fromEntries((res.TagSet || []).map(({ Key, Value }) => [Key, Value]));
+    } catch (err) {
+      if (err.name === 'AccessDenied' || err.$metadata?.httpStatusCode === 403) return {};
+      throw err;
+    }
+  }
+
+  const thumbKeyFor = (key) => `${thumbPrefix}${key.slice(prefix.length)}`;
+
+  async function listImages(rawFilter = {}) {
+    const filter = validateTags(rawFilter, config.tagKeys);
+    const [images, thumbs] = await Promise.all([listAll(prefix), listAll(thumbPrefix)]);
+    const thumbKeys = new Set(thumbs.map((t) => t.Key));
 
     const items = await Promise.all(
-      images.map(async (obj) => ({
-        key: obj.Key,
-        size: obj.Size,
-        lastModified: obj.LastModified,
-        url: await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: obj.Key }), {
-          expiresIn: config.viewUrlExpires,
-        }),
-      })),
+      images.map(async (obj) => {
+        const thumbKey = thumbKeyFor(obj.Key);
+        const [tags, url, thumbUrl] = await Promise.all([
+          readTags(obj.Key),
+          getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: obj.Key }), {
+            expiresIn: config.viewUrlExpires,
+          }),
+          thumbKeys.has(thumbKey)
+            ? getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: thumbKey }), {
+                expiresIn: config.viewUrlExpires,
+              })
+            : null,
+        ]);
+        return { key: obj.Key, size: obj.Size, lastModified: obj.LastModified, tags, url, thumbUrl };
+      }),
     );
 
-    return items.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+    return items
+      .filter((item) => Object.entries(filter).every(([name, value]) => item.tags[name] === value))
+      .sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
   }
 
   async function exists(key) {
@@ -99,6 +136,9 @@ function createImageService({ s3, config }) {
       throw new ValidationError('La imagen no existe', 404);
     }
     await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    // La miniatura (si existe) se elimina junto con el original; borrar una
+    // clave inexistente no es un error en S3.
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: thumbKeyFor(key) }));
     return { deleted: true, key };
   }
 

@@ -5,6 +5,7 @@ const {
   HeadObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  GetObjectTaggingCommand,
 } = require('@aws-sdk/client-s3');
 const { loadConfig } = require('../src/config');
 const { createImageService } = require('../src/services/imageService');
@@ -82,8 +83,10 @@ test('listImages pagina, omite el prefijo vacío y firma URLs de 15 minutos', as
     { IsTruncated: false, Contents: [{ Key: 'originales/b.png', Size: 200, LastModified: new Date('2026-01-03') }] },
   ];
   const { s3, calls } = fakeS3(async (cmd) => {
-    assert.ok(cmd instanceof ListObjectsV2Command);
-    return pages.shift();
+    if (cmd instanceof ListObjectsV2Command) {
+      return cmd.input.Prefix === 'miniaturas/' ? { Contents: [] } : pages.shift();
+    }
+    return { TagSet: [] };
   });
   const service = createImageService({ s3, config });
 
@@ -91,7 +94,98 @@ test('listImages pagina, omite el prefijo vacío y firma URLs de 15 minutos', as
 
   assert.deepEqual(items.map((i) => i.key), ['originales/b.png', 'originales/a.jpg']);
   assert.equal(new URL(items[0].url).searchParams.get('X-Amz-Expires'), '900');
-  assert.equal(calls[1].input.ContinuationToken, 'p2');
+  assert.equal(items[0].thumbUrl, null);
+  const paginado = calls.find((c) => c.input.ContinuationToken === 'p2');
+  assert.ok(paginado, 'debe pedir la segunda página con el token');
+});
+
+test('listImages une etiquetas y miniaturas, y filtra por proyecto y cliente', async () => {
+  const etiquetas = {
+    'originales/a.jpg': [{ Key: 'proyecto', Value: 'lab09' }, { Key: 'cliente', Value: 'acme' }],
+    'originales/b.png': [{ Key: 'proyecto', Value: 'otro' }],
+  };
+  const { s3 } = fakeS3(async (cmd) => {
+    if (cmd instanceof ListObjectsV2Command) {
+      if (cmd.input.Prefix === 'miniaturas/') {
+        return { Contents: [{ Key: 'miniaturas/a.jpg', Size: 50, LastModified: new Date('2026-01-02') }] };
+      }
+      return {
+        Contents: [
+          { Key: 'originales/a.jpg', Size: 100, LastModified: new Date('2026-01-02') },
+          { Key: 'originales/b.png', Size: 200, LastModified: new Date('2026-01-03') },
+        ],
+      };
+    }
+    if (cmd instanceof GetObjectTaggingCommand) return { TagSet: etiquetas[cmd.input.Key] || [] };
+    return {};
+  });
+  const service = createImageService({ s3, config });
+
+  const todas = await service.listImages();
+  const a = todas.find((i) => i.key === 'originales/a.jpg');
+  assert.deepEqual(a.tags, { proyecto: 'lab09', cliente: 'acme' });
+  assert.match(a.thumbUrl, /miniaturas\/a\.jpg/);
+  assert.equal(todas.find((i) => i.key === 'originales/b.png').thumbUrl, null);
+
+  const filtradas = await service.listImages({ proyecto: 'lab09' });
+  assert.deepEqual(filtradas.map((i) => i.key), ['originales/a.jpg']);
+  assert.deepEqual((await service.listImages({ proyecto: 'lab09', cliente: 'nadie' })), []);
+  await assert.rejects(service.listImages({ owner: 'x' }), { status: 400 });
+});
+
+test('listImages tolera la falta de permiso para leer etiquetas', async () => {
+  const { s3 } = fakeS3(async (cmd) => {
+    if (cmd instanceof ListObjectsV2Command) {
+      return cmd.input.Prefix === 'miniaturas/'
+        ? {}
+        : { Contents: [{ Key: 'originales/a.jpg', Size: 100, LastModified: new Date('2026-01-02') }] };
+    }
+    if (cmd instanceof GetObjectTaggingCommand) {
+      const err = new Error('Access Denied');
+      err.name = 'AccessDenied';
+      throw err;
+    }
+    return {};
+  });
+  const service = createImageService({ s3, config });
+
+  const items = await service.listImages();
+
+  assert.equal(items.length, 1);
+  assert.deepEqual(items[0].tags, {});
+});
+
+test('createUploadUrl firma las etiquetas en la URL cuando se envían', async () => {
+  const { s3 } = fakeS3();
+  const service = createImageService({ s3, config });
+
+  const result = await service.createUploadUrl({
+    filename: 'foto.jpg',
+    contentType: 'image/jpeg',
+    sizeBytes: 1000,
+    tags: { proyecto: 'Lab 09', cliente: 'ACME' },
+  });
+  const params = new URL(result.uploadUrl).searchParams;
+
+  assert.equal(params.get('x-amz-tagging'), 'proyecto=Lab%2009&cliente=ACME');
+  assert.doesNotMatch(params.get('X-Amz-SignedHeaders'), /tagging/);
+  assert.equal('x-amz-tagging' in result.headers, false);
+  assert.deepEqual(result.tags, { proyecto: 'Lab 09', cliente: 'ACME' });
+
+  await assert.rejects(
+    service.createUploadUrl({ filename: 'a.jpg', contentType: 'image/jpeg', sizeBytes: 10, tags: { owner: 'x' } }),
+    { status: 400 },
+  );
+});
+
+test('createUploadUrl sin etiquetas no agrega la cabecera x-amz-tagging', async () => {
+  const { s3 } = fakeS3();
+  const service = createImageService({ s3, config });
+
+  const result = await service.createUploadUrl({ filename: 'a.jpg', contentType: 'image/jpeg', sizeBytes: 10 });
+
+  assert.equal('x-amz-tagging' in result.headers, false);
+  assert.equal(new URL(result.uploadUrl).searchParams.has('x-amz-tagging'), false);
 });
 
 test('deleteImage elimina la clave válida y responde 404 si no existe', async () => {
@@ -112,7 +206,8 @@ test('deleteImage elimina la clave válida y responde 404 si no existe', async (
     deleted: true,
     key: 'originales/1-ab-foto.jpg',
   });
-  assert.ok(calls.some((c) => c instanceof DeleteObjectCommand));
+  const borrados = calls.filter((c) => c instanceof DeleteObjectCommand).map((c) => c.input.Key);
+  assert.deepEqual(borrados, ['originales/1-ab-foto.jpg', 'miniaturas/1-ab-foto.jpg']);
 
   await assert.rejects(service.deleteImage('originales/fantasma.jpg'), { status: 404 });
   await assert.rejects(service.deleteImage('../otro-bucket/secreto'), { status: 400 });
