@@ -36,6 +36,18 @@
 
         <p class="selected-file" id="selected-file">Ningún archivo seleccionado.</p>
 
+        <fieldset class="tag-fields">
+          <legend>Etiquetas (opcional)</legend>
+          <label class="field">
+            <span>Proyecto</span>
+            <input type="text" id="tag-proyecto" maxlength="40" autocomplete="off" placeholder="p. ej. lab09">
+          </label>
+          <label class="field">
+            <span>Cliente</span>
+            <input type="text" id="tag-cliente" maxlength="40" autocomplete="off" placeholder="p. ej. acme">
+          </label>
+        </fieldset>
+
         <div class="actions">
           <button type="submit" id="submit-btn" class="btn btn-primary">Subir</button>
         </div>
@@ -55,6 +67,19 @@
         <span class="count" id="gallery-count"></span>
         <button type="button" class="btn" data-action="reload">Recargar galería</button>
       </div>
+
+      <form class="filters" id="filter-form" novalidate>
+        <label class="field">
+          <span>Proyecto</span>
+          <input type="text" id="filter-proyecto" maxlength="40" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Cliente</span>
+          <input type="text" id="filter-cliente" maxlength="40" autocomplete="off">
+        </label>
+        <button type="submit" class="btn">Filtrar</button>
+        <button type="button" class="btn" id="filter-clear">Limpiar filtro</button>
+      </form>
 
       <div class="state" id="gallery-state" aria-live="polite"></div>
       <ul class="grid" id="gallery" role="list"></ul>
