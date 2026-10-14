@@ -23,6 +23,12 @@ const ui = {
   gallery: $('gallery'),
   galleryState: $('gallery-state'),
   count: $('gallery-count'),
+  tagProyecto: $('tag-proyecto'),
+  tagCliente: $('tag-cliente'),
+  filterForm: $('filter-form'),
+  filterProyecto: $('filter-proyecto'),
+  filterCliente: $('filter-cliente'),
+  filterClear: $('filter-clear'),
 };
 
 let archivo = null;
@@ -194,6 +200,10 @@ async function subirImagen() {
       filename: archivo.name,
       contentType: archivo.type,
       sizeBytes: archivo.size,
+      tags: {
+        proyecto: ui.tagProyecto.value.trim(),
+        cliente: ui.tagCliente.value.trim(),
+      },
     });
     const firmaValida = typeof firma.uploadUrl === 'string'
       && typeof firma.key === 'string'
@@ -251,13 +261,25 @@ function actualizarConteo() {
   ui.count.textContent = total === 0 ? '' : `${total} ${total === 1 ? 'imagen' : 'imágenes'}`;
 }
 
+function crearInsignias(tags) {
+  const lista = el('ul', { className: 'badges', attrs: { 'aria-label': 'Etiquetas' } });
+  for (const [nombre, valor] of Object.entries(tags || {})) {
+    if (typeof valor !== 'string') continue;
+    lista.append(el('li', { className: 'badge', text: `${nombre}: ${valor}` }));
+  }
+  return lista;
+}
+
 function crearTarjeta(imagen) {
   const nombre = nombreCorto(imagen.key);
 
   const tarjeta = el('li', { className: 'card', data: { key: imagen.key } });
   const media = el('div', { className: 'card-media' });
+  // La miniatura (generada por la función Lambda) pesa menos; si aún no existe
+  // se muestra el original.
+  const origen = typeof imagen.thumbUrl === 'string' ? imagen.thumbUrl : imagen.url;
   media.append(el('img', {
-    attrs: { loading: 'lazy', decoding: 'async', alt: nombre, src: imagen.url },
+    attrs: { loading: 'lazy', decoding: 'async', alt: nombre, src: origen },
   }));
 
   const cuerpo = el('div', { className: 'card-body' });
@@ -266,6 +288,12 @@ function crearTarjeta(imagen) {
     el('p', {
       className: 'card-meta',
       text: `${formatearTamano(imagen.size)} · ${formatearFecha(imagen.lastModified)}`,
+    }),
+    crearInsignias(imagen.tags),
+    el('a', {
+      className: 'card-link',
+      text: 'Ver original',
+      attrs: { href: imagen.url, target: '_blank', rel: 'noopener noreferrer' },
     }),
     el('button', {
       className: 'btn btn-danger',
@@ -294,7 +322,11 @@ async function cargarGaleria() {
   if (ui.gallery.children.length === 0) mostrarEstado('cargando');
 
   try {
-    const datos = await pedirJson('/api/images');
+    const filtro = new URLSearchParams();
+    if (ui.filterProyecto.value.trim()) filtro.set('proyecto', ui.filterProyecto.value.trim());
+    if (ui.filterCliente.value.trim()) filtro.set('cliente', ui.filterCliente.value.trim());
+    const consulta = filtro.toString();
+    const datos = await pedirJson(`/api/images${consulta ? `?${consulta}` : ''}`);
     if (id !== cargaActual) return;
     if (!Array.isArray(datos)) throw new Error(MSG_FORMATO);
     renderizarGaleria(datos);
@@ -361,6 +393,17 @@ ui.dropzone.addEventListener('drop', (e) => {
   if (valido && archivos.length > 1) {
     setStatus('Solo se sube una imagen a la vez; se tomó la primera.', 'info');
   }
+});
+
+ui.filterForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  cargarGaleria();
+});
+
+ui.filterClear.addEventListener('click', () => {
+  ui.filterProyecto.value = '';
+  ui.filterCliente.value = '';
+  cargarGaleria();
 });
 
 // Soltar un archivo fuera de la zona no debe hacer que el navegador abra la imagen.
