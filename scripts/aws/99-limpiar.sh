@@ -2,9 +2,13 @@
 # 99-limpiar.sh - Limpieza obligatoria del laboratorio
 #
 # Elimina, tolerando que cada recurso ya no exista:
+#   - configuración de notificaciones de BUCKET (se deja vacía)
+#   - función Lambda LAMBDA_NAME, su grupo de logs /aws/lambda/LAMBDA_NAME y
+#     el rol LAMBDA_ROLE (reto de miniaturas)
 #   - bucket BUCKET (con todas sus versiones y delete markers) y REPLICA_BUCKET
 #   - rol de replicación REPLICATION_ROLE
-#   - Access Keys, política y usuario IAM_USER
+#   - Access Keys, políticas IAM_POLICY_NAME e IAM_TAGS_POLICY_NAME y usuario
+#     IAM_USER
 #   - perfil local APP_PROFILE de ~/.aws/credentials y ~/.aws/config
 #     (con respaldo previo en *.bak-lab09)
 # Exige escribir el nombre exacto del bucket para continuar.
@@ -12,10 +16,12 @@
 # Uso:
 #   ./99-limpiar.sh [--dry-run] [--skip-iam]
 #
-#   --skip-iam   no toca usuario, política ni perfil local (AWS Academy)
+#   --skip-iam   no toca usuario, políticas ni perfil local (AWS Academy); los
+#                roles de Lambda y de replicación se intentan siempre
 #
 # Variables: BUCKET, AWS_REGION, REPLICA_BUCKET, REPLICA_REGION, IAM_USER,
-#            IAM_POLICY_NAME, REPLICATION_ROLE, APP_PROFILE, ADMIN_PROFILE
+#            IAM_POLICY_NAME, IAM_TAGS_POLICY_NAME, REPLICATION_ROLE,
+#            LAMBDA_NAME, LAMBDA_ROLE, APP_PROFILE, ADMIN_PROFILE
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,14 +44,17 @@ validar_nombre_bucket "$BUCKET"
 mostrar_config
 
 ARN_POLITICA="arn:aws:iam::${ACCOUNT_ID}:policy/${IAM_POLICY_NAME}"
+ARN_POLITICA_TAGS="arn:aws:iam::${ACCOUNT_ID}:policy/${IAM_TAGS_POLICY_NAME}"
 
 echo
 info "Se eliminará de forma permanente:"
+info "  - notificaciones del bucket $BUCKET"
+info "  - función Lambda $LAMBDA_NAME, su grupo de logs /aws/lambda/$LAMBDA_NAME y el rol $LAMBDA_ROLE, si existen"
 info "  - bucket $BUCKET ($AWS_REGION) con todas sus versiones"
 info "  - bucket $REPLICA_BUCKET ($REPLICA_REGION), si existe"
 info "  - rol $REPLICATION_ROLE, si existe"
 if [ "$SKIP_IAM" = "0" ]; then
-  info "  - usuario $IAM_USER, sus Access Keys y la política $IAM_POLICY_NAME"
+  info "  - usuario $IAM_USER, sus Access Keys y las políticas $IAM_POLICY_NAME e $IAM_TAGS_POLICY_NAME"
   info "  - perfil local $APP_PROFILE en ~/.aws"
 fi
 confirmar_escribiendo "$BUCKET" "Esta acción no se puede deshacer." || fail "El nombre no coincide; no se elimina nada."
@@ -120,9 +129,99 @@ borrar_bucket() { # $1 región, $2 bucket
   fi
 }
 
+# --- Miniaturas con Lambda ---
+# Primero se quitan las notificaciones y la función, para que no se generen
+# miniaturas mientras se vacía el bucket.
+quitar_notificaciones() { # $1 región, $2 bucket
+  local actual
+  if ! es_dry_run; then
+    if ! aws_admin_en_q "$1" s3api head-bucket --bucket "$2" >/dev/null 2>&1; then
+      return 0
+    fi
+    actual="$(aws_admin_en_q "$1" s3api get-bucket-notification-configuration --bucket "$2" \
+      --output json 2>/dev/null || true)"
+    if ! printf '%s' "$actual" | grep -q 'Configuration'; then
+      info "El bucket $2 no tiene notificaciones."
+      return 0
+    fi
+  fi
+  if aws_admin_en "$1" s3api put-bucket-notification-configuration --bucket "$2" \
+    --notification-configuration '{}'; then
+    ok "Notificaciones de $2 eliminadas."
+  else
+    aviso "No se pudieron quitar las notificaciones de $2."
+  fi
+}
+
+borrar_funcion_lambda() {
+  if ! es_dry_run && ! aws_admin_q lambda get-function --function-name "$LAMBDA_NAME" >/dev/null 2>&1; then
+    info "La función $LAMBDA_NAME no existe."
+    return 0
+  fi
+  if aws_admin lambda delete-function --function-name "$LAMBDA_NAME"; then
+    ok "Función $LAMBDA_NAME eliminada."
+  else
+    aviso "No se pudo borrar la función $LAMBDA_NAME."
+  fi
+}
+
+borrar_logs_lambda() {
+  local grupo="/aws/lambda/$LAMBDA_NAME" existe
+  if ! es_dry_run; then
+    existe="$(aws_admin_q logs describe-log-groups --log-group-name-prefix "$grupo" \
+      --query "logGroups[?logGroupName=='$grupo'].logGroupName" --output text 2>/dev/null || true)"
+    if [ -z "$existe" ] || [ "$existe" = "None" ]; then
+      info "El grupo de logs $grupo no existe."
+      return 0
+    fi
+  fi
+  if aws_admin logs delete-log-group --log-group-name "$grupo"; then
+    ok "Grupo de logs $grupo eliminado."
+  else
+    aviso "No se pudo borrar el grupo de logs $grupo."
+  fi
+}
+
+borrar_rol_lambda() {
+  local adjuntas en_linea a e
+  if ! es_dry_run && ! aws_admin_q iam get-role --role-name "$LAMBDA_ROLE" >/dev/null 2>&1; then
+    info "El rol $LAMBDA_ROLE no existe."
+    return 0
+  fi
+  adjuntas="$(aws_admin_q iam list-attached-role-policies --role-name "$LAMBDA_ROLE" \
+    --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null || true)"
+  en_linea="$(aws_admin_q iam list-role-policies --role-name "$LAMBDA_ROLE" \
+    --query 'PolicyNames[]' --output text 2>/dev/null || true)"
+  if es_dry_run; then
+    adjuntas="$LAMBDA_BASIC_POLICY_ARN"
+    en_linea="$LAMBDA_POLICY_NAME"
+  fi
+  [ "$adjuntas" != "None" ] || adjuntas=""
+  [ "$en_linea" != "None" ] || en_linea=""
+  for a in $adjuntas; do
+    aws_admin iam detach-role-policy --role-name "$LAMBDA_ROLE" --policy-arn "$a" ||
+      aviso "No se pudo desadjuntar $a"
+  done
+  for e in $en_linea; do
+    aws_admin iam delete-role-policy --role-name "$LAMBDA_ROLE" --policy-name "$e" ||
+      aviso "No se pudo borrar la política en línea $e"
+  done
+  if aws_admin iam delete-role --role-name "$LAMBDA_ROLE"; then
+    ok "Rol $LAMBDA_ROLE eliminado."
+  else
+    aviso "No se pudo borrar el rol $LAMBDA_ROLE."
+  fi
+}
+
+quitar_notificaciones "$AWS_REGION" "$BUCKET"
+borrar_funcion_lambda
+
 # --- Buckets ---
 borrar_bucket "$AWS_REGION" "$BUCKET"
 borrar_bucket "$REPLICA_REGION" "$REPLICA_BUCKET"
+
+borrar_logs_lambda
+borrar_rol_lambda
 
 # --- Rol de replicación ---
 borrar_rol_replicacion() {
@@ -161,7 +260,7 @@ borrar_usuario_iam() {
       --query 'Groups[].GroupName' --output text 2>/dev/null || true)"
     if es_dry_run; then
       claves="<ACCESS_KEY_ID>"
-      adjuntas="$ARN_POLITICA"
+      adjuntas="$ARN_POLITICA $ARN_POLITICA_TAGS"
     fi
     for c in $claves; do
       aws_admin iam delete-access-key --user-name "$IAM_USER" --access-key-id "$c" ||
@@ -186,6 +285,7 @@ borrar_usuario_iam() {
   fi
 
   borrar_politica_propia
+  borrar_politica_propia "$ARN_POLITICA_TAGS" "$IAM_TAGS_POLICY_NAME"
 
   if es_dry_run || aws_admin_q iam get-user --user-name "$IAM_USER" >/dev/null 2>&1; then
     aws_admin iam delete-user --user-name "$IAM_USER" || aviso "No se pudo borrar el usuario $IAM_USER"
@@ -193,21 +293,21 @@ borrar_usuario_iam() {
   fi
 }
 
-borrar_politica_propia() {
-  local versiones v
-  if ! es_dry_run && ! aws_admin_q iam get-policy --policy-arn "$ARN_POLITICA" >/dev/null 2>&1; then
-    info "La política $IAM_POLICY_NAME no existe."
+borrar_politica_propia() { # $1 ARN y $2 nombre (def. la política del enunciado)
+  local arn="${1:-$ARN_POLITICA}" nombre="${2:-$IAM_POLICY_NAME}" versiones v
+  if ! es_dry_run && ! aws_admin_q iam get-policy --policy-arn "$arn" >/dev/null 2>&1; then
+    info "La política $nombre no existe."
     return 0
   fi
-  versiones="$(aws_admin_q iam list-policy-versions --policy-arn "$ARN_POLITICA" \
+  versiones="$(aws_admin_q iam list-policy-versions --policy-arn "$arn" \
     --query 'Versions[?!IsDefaultVersion].VersionId' --output text 2>/dev/null || true)"
   for v in $versiones; do
-    aws_admin iam delete-policy-version --policy-arn "$ARN_POLITICA" --version-id "$v" ||
+    aws_admin iam delete-policy-version --policy-arn "$arn" --version-id "$v" ||
       aviso "No se pudo borrar la versión $v de la política"
   done
-  aws_admin iam delete-policy --policy-arn "$ARN_POLITICA" ||
-    aviso "No se pudo borrar la política $IAM_POLICY_NAME (¿sigue adjunta a otra entidad?)"
-  ok "Política $IAM_POLICY_NAME eliminada."
+  aws_admin iam delete-policy --policy-arn "$arn" ||
+    aviso "No se pudo borrar la política $nombre (¿sigue adjunta a otra entidad?)"
+  ok "Política $nombre eliminada."
 }
 
 # --- Perfil local del CLI ---
@@ -268,11 +368,11 @@ borrar_perfil_local() {
 borrar_rol_replicacion
 
 if [ "$SKIP_IAM" = "1" ]; then
-  info "--skip-iam: no se elimina usuario, política ni perfil local."
+  info "--skip-iam: no se elimina usuario, políticas ni perfil local."
 else
   borrar_usuario_iam
   borrar_perfil_local
 fi
 
 echo
-ok "Limpieza terminada. Revisa en la consola de AWS que no queden buckets, usuarios ni roles del laboratorio."
+ok "Limpieza terminada. Revisa en la consola de AWS que no queden buckets, funciones Lambda, grupos de logs, usuarios ni roles del laboratorio."
