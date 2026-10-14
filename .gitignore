@@ -1,0 +1,29 @@
+# Dependencias
+node_modules/
+
+# Secretos y credenciales (nunca versionar)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.aws/
+credentials
+*.tfstate*
+.terraform/
+terraform.tfvars
+
+# Logs y cobertura
+*.log
+npm-debug.log*
+coverage/
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Salidas locales de pruebas
+descarga*.jpg
+fotos/
