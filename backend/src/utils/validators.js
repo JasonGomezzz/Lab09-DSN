@@ -26,8 +26,11 @@ function validateUploadRequest(body, config) {
   if (!Number.isInteger(sizeBytes) || sizeBytes <= 0) {
     throw new ValidationError('El tamaño del archivo debe ser un entero positivo en bytes');
   }
-  if (sizeBytes > config.maxSizeMb * 1024 * 1024) {
-    throw new ValidationError(`Archivo demasiado grande (máximo ${config.maxSizeMb} MB)`, 413);
+  if (sizeBytes >= config.maxSizeMb * 1024 * 1024) {
+    throw new ValidationError(
+      `Archivo demasiado grande (debe pesar menos de ${config.maxSizeMb} MB)`,
+      413,
+    );
   }
 
   return { filename, contentType, sizeBytes };

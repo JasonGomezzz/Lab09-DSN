@@ -35,6 +35,19 @@ test('rechaza archivos de 10 MB con 413', () => {
   );
 });
 
+test('el límite es estricto: exactamente 5 MB se rechaza y un byte menos se acepta', () => {
+  const limite = 5 * MB;
+  assert.throws(
+    () => validateUploadRequest({ filename: 'a.jpg', contentType: 'image/jpeg', sizeBytes: limite }, config),
+    (e) => e.status === 413,
+  );
+  const r = validateUploadRequest(
+    { filename: 'a.jpg', contentType: 'image/jpeg', sizeBytes: limite - 1 },
+    config,
+  );
+  assert.equal(r.sizeBytes, limite - 1);
+});
+
 test('rechaza tamaños ausentes, negativos o no numéricos', () => {
   for (const sizeBytes of [undefined, 0, -5, '100', 1.5, NaN]) {
     assert.throws(

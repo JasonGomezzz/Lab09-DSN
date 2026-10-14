@@ -123,7 +123,7 @@ function createImageService({ s3, config }) {
     const maxBytes = config.maxSizeMb * 1024 * 1024;
     let reason = null;
 
-    if (head.ContentLength > maxBytes) {
+    if (head.ContentLength >= maxBytes) {
       reason = 'El archivo almacenado supera el tamaño permitido';
     } else {
       const partial = await s3.send(
