@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Galería de imágenes - Lab S3</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#galeria">Saltar a la galería</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <h1>Mi galería en S3</h1>
+      <p class="lead">Sube imágenes JPG, PNG o WebP. El navegador las envía directamente a Amazon S3 con una URL prefirmada de corta duración.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <noscript>
+      <p class="status" data-kind="error">Esta página necesita JavaScript para subir y mostrar imágenes.</p>
+    </noscript>
+
+    <section class="panel" aria-labelledby="titulo-subida">
+      <h2 id="titulo-subida">Subir una imagen</h2>
+
+      <form id="upload-form" novalidate>
+        <input class="sr-only file-input" type="file" id="file-input" name="imagen"
+               accept="image/jpeg,image/png,image/webp">
+        <label class="dropzone" id="dropzone" for="file-input">
+          <span class="dropzone-title">Elige una imagen o arrástrala aquí</span>
+          <span class="dropzone-hint">JPG, PNG o WebP. Debe pesar menos de 5 MB.</span>
+        </label>
+
+        <p class="selected-file" id="selected-file">Ningún archivo seleccionado.</p>
+
+        <div class="actions">
+          <button type="submit" id="submit-btn" class="btn btn-primary">Subir</button>
+        </div>
+
+        <div class="progress-row" id="progress-row" hidden>
+          <progress id="progress" max="100" value="0" aria-label="Progreso de la subida"></progress>
+          <span id="progress-text">0 %</span>
+        </div>
+      </form>
+
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" id="galeria" aria-labelledby="titulo-galeria">
+      <div class="section-head">
+        <h2 id="titulo-galeria" tabindex="-1">Galería</h2>
+        <span class="count" id="gallery-count"></span>
+        <button type="button" class="btn" data-action="reload">Recargar galería</button>
+      </div>
+
+      <div class="state" id="gallery-state" aria-live="polite"></div>
+      <ul class="grid" id="gallery" role="list"></ul>
+    </section>
+  </main>
+
+  <footer class="wrap site-footer">
+    <p>Laboratorio de Amazon S3 - TECSUP</p>
+  </footer>
+</body>
+</html>
