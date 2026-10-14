@@ -72,6 +72,42 @@ function assertValidKey(key, prefix) {
   return key;
 }
 
+const TAG_VALUE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$/;
+
+/**
+ * Valida las etiquetas de clasificación (proyecto, cliente). Solo se admiten
+ * las claves de la lista blanca y valores cortos con caracteres seguros.
+ * Los valores vacíos se descartan.
+ */
+function validateTags(raw, tagKeys) {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ValidationError('Las etiquetas deben ser un objeto');
+  }
+
+  const tags = {};
+  for (const [name, value] of Object.entries(raw)) {
+    if (!tagKeys.includes(name)) {
+      throw new ValidationError(`Etiqueta no permitida: ${name}`);
+    }
+    if (value === undefined || value === null || value === '') continue;
+    if (typeof value !== 'string' || !TAG_VALUE_PATTERN.test(value.trim())) {
+      throw new ValidationError(
+        `Valor inválido para ${name}: usa letras, números, espacios, punto, guion o guion bajo (máximo 40)`,
+      );
+    }
+    tags[name] = value.trim();
+  }
+  return tags;
+}
+
+/** Formato de la cabecera x-amz-tagging (consulta URL): clave=valor&clave=valor. */
+function tagsToHeader(tags) {
+  return Object.entries(tags)
+    .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`)
+    .join('&');
+}
+
 /** Identifica el tipo real de imagen por sus magic bytes. */
 function detectImageType(buffer) {
   if (!buffer || buffer.length < 12) return null;
@@ -97,5 +133,7 @@ module.exports = {
   validateUploadRequest,
   sanitizeFilename,
   assertValidKey,
+  validateTags,
+  tagsToHeader,
   detectImageType,
 };

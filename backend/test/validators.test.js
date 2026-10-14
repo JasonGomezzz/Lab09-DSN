@@ -6,6 +6,8 @@ const {
   validateUploadRequest,
   sanitizeFilename,
   assertValidKey,
+  validateTags,
+  tagsToHeader,
   detectImageType,
 } = require('../src/utils/validators');
 
@@ -107,4 +109,25 @@ test('detectImageType reconoce magic bytes y rechaza ejecutables', () => {
   assert.equal(detectImageType(exe), null);
   assert.equal(detectImageType(Buffer.alloc(3)), null);
   assert.equal(detectImageType(null), null);
+});
+
+test('validateTags acepta proyecto y cliente, recorta espacios y descarta vacíos', () => {
+  const tags = validateTags({ proyecto: ' Lab 09 ', cliente: 'ACME-01', otro: undefined }, config.tagKeys.concat('otro'));
+  assert.deepEqual(tags, { proyecto: 'Lab 09', cliente: 'ACME-01' });
+  assert.deepEqual(validateTags({ proyecto: '', cliente: '' }, config.tagKeys), {});
+  assert.deepEqual(validateTags(undefined, config.tagKeys), {});
+});
+
+test('validateTags rechaza claves fuera de la lista y valores peligrosos', () => {
+  assert.throws(() => validateTags({ owner: 'x' }, config.tagKeys), ValidationError);
+  assert.throws(() => validateTags({ proyecto: 'a&cliente=b' }, config.tagKeys), ValidationError);
+  assert.throws(() => validateTags({ proyecto: '<script>' }, config.tagKeys), ValidationError);
+  assert.throws(() => validateTags({ proyecto: 'x'.repeat(41) }, config.tagKeys), ValidationError);
+  assert.throws(() => validateTags({ proyecto: 42 }, config.tagKeys), ValidationError);
+  assert.throws(() => validateTags(['proyecto'], config.tagKeys), ValidationError);
+});
+
+test('tagsToHeader codifica claves y valores para x-amz-tagging', () => {
+  assert.equal(tagsToHeader({ proyecto: 'Lab 09', cliente: 'ACME' }), 'proyecto=Lab%2009&cliente=ACME');
+  assert.equal(tagsToHeader({}), '');
 });

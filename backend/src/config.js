@@ -36,6 +36,8 @@ function loadConfig(env = process.env) {
     allowedTypes: Object.freeze(Object.keys(MIME_TO_EXT)),
     mimeToExt: MIME_TO_EXT,
     prefix: 'originales/',
+    thumbPrefix: 'miniaturas/',
+    tagKeys: Object.freeze(['proyecto', 'cliente']),
   });
 }
 
