@@ -41,9 +41,10 @@ backend/
     app.js                  Express: CORS, rate limiting, errores, estáticos
   test/                     pruebas con node --test
 frontend/                   index.html, app.js, styles.css (sin dependencias)
+lambda/miniaturas/          función Lambda que genera miniaturas (reto opcional)
 scripts/
   pruebas-api.sh            pruebas obligatorias del ejercicio 4 contra la API
-  aws/                      automatización de los ejercicios 1 a 3 con AWS CLI
+  aws/                      automatización de los ejercicios 1 a 3 y de los retos con AWS CLI
 ```
 
 ## Puesta en marcha
@@ -60,6 +61,8 @@ scripts/aws/02-seguridad-iam-cifrado.sh     # ejercicio 2: IAM mínimo, HTTPS, S
 scripts/aws/04-validar-politicas.sh         # ejercicio 2D: validación con el perfil app-user
 scripts/aws/03-versionado-lifecycle.sh      # ejercicio 3: versionado y ciclo de vida (--demo)
 scripts/aws/05-replicacion-opcional.sh      # ejercicio 3D (opcional): replicación entre regiones
+scripts/aws/06-object-tags.sh               # reto opcional: política y validación de Object Tags
+scripts/aws/07-miniaturas-lambda.sh         # reto opcional: función Lambda de miniaturas
 ```
 
 ### 2. Backend y frontend (ejercicio 4)
@@ -93,18 +96,36 @@ Referencia completa en [backend/.env.example](backend/.env.example).
 
 | Método y ruta | Descripción | Respuestas |
 |---|---|---|
-| `POST /api/upload-url` | Recibe `{filename, contentType, sizeBytes}` y devuelve `{uploadUrl, key, expiresIn, headers}` (válida 5 min) | 200, 400 tipo o cuerpo inválido, 413 tamaño, 429 límite |
+| `POST /api/upload-url` | Recibe `{filename, contentType, sizeBytes, tags?}` y devuelve `{uploadUrl, key, expiresIn, headers, tags}` (válida 5 min) | 200, 400 tipo, cuerpo o etiquetas inválidas, 413 tamaño, 429 límite |
 | `POST /api/verify` | Recibe `{key}`; comprueba tamaño y magic bytes del objeto subido y lo elimina si no es una imagen | 200, 404, 422 |
-| `GET /api/images` | Lista las imágenes de `originales/` con URL de vista (15 min) | 200 |
-| `DELETE /api/images/:key` | Elimina la imagen; `:key` va con `encodeURIComponent` | 200, 400, 404 |
+| `GET /api/images?proyecto=&cliente=` | Lista las imágenes de `originales/` con `tags`, `url` de vista (15 min) y `thumbUrl` si existe la miniatura; admite filtro por etiquetas | 200, 400 filtro inválido |
+| `DELETE /api/images/:key` | Elimina la imagen y su miniatura; `:key` va con `encodeURIComponent` | 200, 400, 404 |
 | `GET /health` | Estado del servicio | 200 |
 
 Los errores responden `{ "error": "mensaje" }`.
+
+## Retos opcionales
+
+### Object Tags (proyecto y cliente)
+
+- El formulario envía `tags: { proyecto, cliente }` (valores cortos con caracteres seguros; claves en lista blanca).
+- La etiqueta viaja **firmada dentro de la URL prefirmada** (`x-amz-tagging`), de modo que el navegador no puede cambiarla ni añadir otras.
+- La galería lee las etiquetas con `GetObjectTagging`, las muestra como insignias y permite filtrar por proyecto o cliente.
+- Requiere `s3:PutObjectTagging` y `s3:GetObjectTagging`: `scripts/aws/06-object-tags.sh` crea una **segunda** política (`app-imagenes-s3-tags`) y no modifica la del enunciado. Sin ese permiso la galería sigue funcionando, solo que sin etiquetas.
+
+### Miniaturas con AWS Lambda
+
+- Cada objeto nuevo bajo `originales/` dispara la función `miniaturas-lab09` (Node 22, `sharp`), que escribe una miniatura de 300 px bajo `miniaturas/` conservando el formato.
+- La salida va a otro prefijo (no hay recursión) y se omiten extensiones no válidas y archivos de más de 10 MB.
+- El rol de la función solo puede leer `originales/*` y escribir `miniaturas/*`; S3 solo puede invocarla desde este bucket y esta cuenta.
+- `scripts/aws/07-miniaturas-lambda.sh` empaqueta para linux x64, crea el rol y la función, autoriza a S3, aplica la notificación y verifica con un PNG de prueba. S3 puede tardar unos minutos en aplicar una notificación nueva.
+- La API devuelve `thumbUrl` y la galería usa la miniatura (con el original disponible en "Ver original"); al eliminar una imagen se borra también su miniatura.
 
 ## Pruebas
 
 ```bash
 cd backend && npm test          # pruebas unitarias y de API, sin red ni credenciales
+cd lambda/miniaturas && npm test  # pruebas de la función de miniaturas (imágenes reales con sharp)
 ```
 
 Con el backend y el bucket reales en marcha, las pruebas obligatorias del
@@ -141,6 +162,7 @@ firmas de las URL).
 | Validación "antes y después de la carga" | El ejemplo solo valida antes | Endpoint `/api/verify` con magic bytes |
 | Cifrado por defecto | Desde 2023 S3 aplica SSE-S3 automáticamente | El script lo declara explícitamente y lo verifica |
 | AWS Academy / Learner Lab | No permite crear usuarios IAM ni claves permanentes | `--skip-iam` en el script 02 y credenciales temporales con `AWS_SESSION_TOKEN` |
+| Política del usuario de la app | Solo incluye 4 acciones; las etiquetas exigen más | Segunda política `app-imagenes-s3-tags` con solo `PutObjectTagging` y `GetObjectTagging` |
 
 ## Limpieza de recursos
 
@@ -151,8 +173,8 @@ scripts/aws/99-limpiar.sh
 ```
 
 Vacía el bucket (incluidas versiones y delete markers), lo elimina junto con la
-réplica opcional, borra las claves, la política y el usuario IAM, y quita el
-perfil local `app-user`.
+réplica opcional, borra la función Lambda con su rol y sus logs, la notificación,
+las claves, las políticas y el usuario IAM, y quita el perfil local `app-user`.
 
 ## Repositorio
 
