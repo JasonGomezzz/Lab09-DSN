@@ -27,7 +27,8 @@ function createImagesRouter({ imageService, uploadLimiter }) {
   router.get(
     '/images',
     asyncHandler(async (req, res) => {
-      res.json(await imageService.listImages());
+      const { proyecto, cliente } = req.query;
+      res.json(await imageService.listImages({ proyecto, cliente }));
     }),
   );
 

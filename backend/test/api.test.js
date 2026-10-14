@@ -203,3 +203,39 @@ test('rutas /api desconocidas responden 404 en JSON', async (t) => {
   assert.equal(res.status, 404);
   assert.deepEqual(await res.json(), { error: 'Ruta no encontrada' });
 });
+
+test('POST /api/upload-url acepta etiquetas y rechaza claves no permitidas', async (t) => {
+  const { base, close } = await startServer();
+  t.after(close);
+
+  const ok = await postJson(`${base}/api/upload-url`, {
+    filename: 'foto.jpg',
+    contentType: 'image/jpeg',
+    sizeBytes: 1000,
+    tags: { proyecto: 'lab09', cliente: 'acme' },
+  });
+  const body = await ok.json();
+  assert.equal(ok.status, 200);
+  assert.deepEqual(body.tags, { proyecto: 'lab09', cliente: 'acme' });
+  assert.match(body.uploadUrl, /x-amz-tagging=/);
+
+  const mal = await postJson(`${base}/api/upload-url`, {
+    filename: 'foto.jpg',
+    contentType: 'image/jpeg',
+    sizeBytes: 1000,
+    tags: { admin: 'si' },
+  });
+  assert.equal(mal.status, 400);
+});
+
+test('GET /api/images valida los filtros de la consulta', async (t) => {
+  const { base, close } = await startServer();
+  t.after(close);
+
+  const filtrado = await fetch(`${base}/api/images?proyecto=lab09`);
+  assert.equal(filtrado.status, 200);
+  assert.deepEqual(await filtrado.json(), []);
+
+  const invalido = await fetch(`${base}/api/images?proyecto=a%26cliente%3Db`);
+  assert.equal(invalido.status, 400);
+});
